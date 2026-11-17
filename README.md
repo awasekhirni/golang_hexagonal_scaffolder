@@ -1,0 +1,1 @@
+# golang_hexagonal_scaffolder
