@@ -1,0 +1,82 @@
+# =============================================================================
+# hexagonal-scaffolder — root docker-compose (v1.4.0)
+#
+# SECURITY (P0-7.13 / v1.4.0): the postgres password is NO LONGER hardcoded
+# as "changeme". It is read from .env via the "${POSTGRES_PASSWORD:?...}"
+# expansion: docker compose will REFUSE to start if .env is missing or
+# POSTGRES_PASSWORD is empty. Run `cp .env.example .env` first.
+# =============================================================================
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hexapi}
+      # The ":?" suffix makes compose fail fast with a clear message if the
+      # variable is unset or empty. This is the v1.4.0 fix for P0-7.13.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copy .env.example to .env and set it}
+      POSTGRES_DB: ${POSTGRES_DB:-hexapi_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Bind-mount migrations so `make migrate` can apply them from the host
+      # without needing the psql client locally.
+      - ./generated-api/resources/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hexapi} -d ${POSTGRES_DB:-hexapi_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - hexapi
+
+  api:
+    build:
+      context: ./generated-api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hexapi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-hexapi_db}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
+      DB_CONN_TIMEOUT: ${DB_CONN_TIMEOUT:-5}
+      HTTP_PORT: 8080
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:8080}
+      RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-100}
+      GRACEFUL_SHUTDOWN_TIMEOUT: ${GRACEFUL_SHUTDOWN_TIMEOUT:-5}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      HEXAPI_LOG_LEVEL: ${HEXAPI_LOG_LEVEL:-DEBUG}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required in any non-dev environment}
+      JWT_ISSUER: ${JWT_ISSUER:-hexapi}
+      JWT_TTL_MINUTES: ${JWT_TTL_MINUTES:-60}
+    ports:
+      - "8080:8080"
+    # P1-8.13 (v1.3.0): the api service now has a healthcheck so compose can
+    # wait for it during `docker compose up`.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    networks:
+      - hexapi
+
+volumes:
+  pgdata:
+
+networks:
+  hexapi:
+    driver: bridge

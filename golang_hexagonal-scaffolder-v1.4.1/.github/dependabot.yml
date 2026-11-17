@@ -1,0 +1,42 @@
+version: 2
+updates:
+  # Go modules in the generator.
+  - package-ecosystem: gomod
+    directory: "/generator"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "generator"]
+    commit-message:
+      prefix: "chore(generator)"
+  # Go modules in the generated-api.
+  - package-ecosystem: gomod
+    directory: "/generated-api"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: UTC
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "generated-api"]
+    commit-message:
+      prefix: "chore(api)"
+  # GitHub Actions.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: ["dependencies", "ci"]
+    commit-message:
+      prefix: "chore(ci)"
+  # Docker images used by docker-compose.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: ["dependencies", "docker"]
+    commit-message:
+      prefix: "chore(docker)"

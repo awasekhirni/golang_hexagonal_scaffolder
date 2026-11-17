@@ -1,0 +1,152 @@
+{{/* template: controller.go.tmpl
+   Renders the HTTP controller for each introspected table.
+   Per-table: emitted once per table under internal/application/{Package}/controller/controller.go.
+   Since 1.4.0. */}}
+// Package controller contains the {{.EntityName}} HTTP handlers.
+// Since 1.4.0.
+package controller
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+
+	dom "{{.ModulePath}}/internal/domain/{{.Package}}"
+	svc "{{.ModulePath}}/internal/application/{{.Package}}"
+	"{{.ModulePath}}/internal/app/middleware"
+	"{{.ModulePath}}/internal/shared/applogger"
+	hexerr "{{.ModulePath}}/internal/shared/errors"
+	"github.com/go-chi/chi/v5"
+)
+
+// Controller is the HTTP driving adapter for {{.EntityName}}. Since 1.4.0.
+type Controller struct {
+	log *applogger.Logger
+	s   *svc.Service
+}
+
+// NewController constructs the controller. Since 1.4.0.
+func NewController(log *applogger.Logger, s *svc.Service) *Controller {
+	if log == nil {
+		log = applogger.New()
+	}
+	return &Controller{log: log, s: s}
+}
+
+// List handles GET /{{.RouteName}}. Since 1.4.0.
+func (c *Controller) List(w http.ResponseWriter, r *http.Request) {
+	err := c.log.Logged("Controller.List", func() error {
+		items, err := c.s.List(r.Context())
+		if err != nil {
+			return err
+		}
+		writeJSON(w, http.StatusOK, items)
+		return nil
+	})
+	if err != nil {
+		middleware.WriteError(w, r, err, c.log)
+	}
+}
+
+// Create handles POST /{{.RouteName}}. Since 1.4.0.
+func (c *Controller) Create(w http.ResponseWriter, r *http.Request) {
+	err := c.log.Logged("Controller.Create", func() error {
+		var e dom.{{.EntityName}}
+		if err := decode(r, &e); err != nil {
+			return err
+		}
+		out, err := c.s.Create(r.Context(), &e)
+		if err != nil {
+			return err
+		}
+		writeJSON(w, http.StatusCreated, out)
+		return nil
+	})
+	if err != nil {
+		middleware.WriteError(w, r, err, c.log)
+	}
+}
+
+// Get handles GET /{{.RouteName}}/{id}. Since 1.4.0.
+func (c *Controller) Get(w http.ResponseWriter, r *http.Request) {
+	err := c.log.Logged("Controller.Get", func() error {
+		id := chi.URLParam(r, "id")
+		if id == "" {
+			return hexerr.Validation("id is required")
+		}
+		out, err := c.s.Get(r.Context(), id)
+		if err != nil {
+			return err
+		}
+		writeJSON(w, http.StatusOK, out)
+		return nil
+	})
+	if err != nil {
+		middleware.WriteError(w, r, err, c.log)
+	}
+}
+
+// Update handles PUT /{{.RouteName}}/{id}. Since 1.4.0.
+func (c *Controller) Update(w http.ResponseWriter, r *http.Request) {
+	err := c.log.Logged("Controller.Update", func() error {
+		id := chi.URLParam(r, "id")
+		if id == "" {
+			return hexerr.Validation("id is required")
+		}
+		var e dom.{{.EntityName}}
+		if err := decode(r, &e); err != nil {
+			return err
+		}
+		e.ID = id
+		out, err := c.s.Update(r.Context(), &e)
+		if err != nil {
+			return err
+		}
+		writeJSON(w, http.StatusOK, out)
+		return nil
+	})
+	if err != nil {
+		middleware.WriteError(w, r, err, c.log)
+	}
+}
+
+// Delete handles DELETE /{{.RouteName}}/{id}. Since 1.4.0.
+func (c *Controller) Delete(w http.ResponseWriter, r *http.Request) {
+	err := c.log.Logged("Controller.Delete", func() error {
+		id := chi.URLParam(r, "id")
+		if id == "" {
+			return hexerr.Validation("id is required")
+		}
+		if err := c.s.Delete(r.Context(), id); err != nil {
+			return err
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	})
+	if err != nil {
+		middleware.WriteError(w, r, err, c.log)
+	}
+}
+
+// decode parses and validates the JSON body into the entity. Since 1.4.0.
+func decode(r *http.Request, e *dom.{{.EntityName}}) error {
+	if r.Body == nil {
+		return hexerr.Validation("request body is required")
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(e); err != nil {
+		if err == io.EOF {
+			return hexerr.Validation("request body is empty")
+		}
+		return hexerr.Validation("invalid JSON: " + err.Error())
+	}
+	return nil
+}
+
+// writeJSON renders a JSON response. Since 1.4.0.
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}

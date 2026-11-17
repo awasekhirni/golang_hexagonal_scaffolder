@@ -1,0 +1,25 @@
+{{/* template: helpers.go.tmpl
+   Schema-aware: embeds the migration SQL (derived from the introspected
+   schema) as a Go const so server.Boot can apply it on startup. Since 1.4.0. */}}
+// Package server helpers: env access + embedded migrations. Since 1.4.0.
+package server
+
+import (
+	"os"
+
+	"{{.ModulePath}}/internal/infra/database"
+)
+
+// envGet wraps os.Getenv (swappable for tests). Since 1.4.0.
+var envGet = func(k string) string { return os.Getenv(k) }
+
+// migrations returns the schema-derived init migration. Since 1.4.0.
+func migrations() []database.Migration {
+	return []database.Migration{
+		{Version: "0001_init", SQL: migrationSQL},
+	}
+}
+
+// migrationSQL is generated from the introspected schema. Since 1.4.0.
+const migrationSQL = `{{range .Tables}}{{.MigrationSQL}}
+{{end}}`

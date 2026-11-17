@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: vet + test (go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.22"]
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: hexapi
+          POSTGRES_PASSWORD: ci-secret
+          POSTGRES_DB: hexapi_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hexapi -d hexapi_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      POSTGRES_USER: hexapi
+      POSTGRES_PASSWORD: ci-secret
+      POSTGRES_DB: hexapi_db
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: 5432
+      DB_POOL_SIZE: 5
+      DB_MAX_OVERFLOW: 10
+      LOG_LEVEL: INFO
+      LOG_FORMAT: json
+      JWT_SECRET: ci-test-secret
+      HTTP_PORT: 8080
+      CORS_ALLOWED_ORIGINS: http://localhost:8080
+      RATE_LIMIT_RPM: 100
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+
+      - name: Read version
+        id: ver
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: go mod download (generator)
+        working-directory: generator
+        run: go mod download
+
+      - name: go mod download (generated-api)
+        working-directory: generated-api
+        run: go mod download
+
+      - name: go vet (generator)
+        working-directory: generator
+        run: go vet ./...
+
+      - name: go vet (generated-api)
+        working-directory: generated-api
+        run: go vet ./...
+
+      - name: go test (generator)
+        working-directory: generator
+        run: go test -race -count=1 -coverprofile=../coverage/generator.out ./...
+
+      - name: go test (generated-api)
+        working-directory: generated-api
+        run: go test -race -count=1 -coverprofile=../coverage/generated-api.out ./...
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-go${{ matrix.go }}
+          path: coverage/
+
+      - name: Integration smoke test
+        run: |
+          set -euo pipefail
+          cd generated-api
+          # Apply migrations to the live service-container postgres.
+          PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+            -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+            -f resources/migrations/0001_init.sql
+          # Bring the API up, hit /health/ready, then tear down.
+          go build -o /tmp/api ./cmd/api
+          /tmp/api &
+          API_PID=$!
+          sleep 2
+          curl -fsS http://127.0.0.1:8080/health/ready
+          curl -fsS http://127.0.0.1:8080/metrics | grep -q hexapi_
+          kill "$API_PID"

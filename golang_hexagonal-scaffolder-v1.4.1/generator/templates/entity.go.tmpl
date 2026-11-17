@@ -1,0 +1,49 @@
+{{/* template: entity.go.tmpl
+   Renders the domain entity for each introspected table.
+   Uses $ to refer to the top-level perTableData inside {{range}} blocks.
+   Since 1.4.0. */}}
+// Package {{.Package}} contains the {{.EntityName}} domain entity.
+// Since 1.4.0.
+package {{.Package}}
+
+import (
+	"errors"
+	"time"
+)
+
+// {{.EntityName}} is the domain entity for the {{.Table}} table.
+// Since 1.4.0.
+type {{.EntityName}} struct {
+{{range .Columns}}	{{.GoName}} {{.GoType}} `json:"{{.Name}}"`
+{{end}}}
+
+// {{.EntityName}}DomainError is returned when a domain invariant is violated.
+// Since 1.4.0.
+type {{.EntityName}}DomainError struct {
+	Field   string
+	Message string
+}
+
+func (e {{.EntityName}}DomainError) Error() string { return e.Field + ": " + e.Message }
+func (e {{.EntityName}}DomainError) Code() string   { return "API-008" }
+
+// Create{{.EntityName}} validates the invariants and returns a populated {{.EntityName}}.
+// Since 1.4.0.
+func Create{{.EntityName}}({{range .Columns}}{{.GoName}} {{.GoType}}, {{end}}) ({{.EntityName}}, error) {
+	if err := validate{{.EntityName}}({{range .Columns}}{{.GoName}}, {{end}}); err != nil {
+		return {{.EntityName}}{}, err
+	}
+	return {{.EntityName}}{
+{{range .Columns}}		{{.GoName}}: {{.GoName}},
+{{end}}	}, nil
+}
+
+func validate{{.EntityName}}({{range .Columns}}{{.GoName}} {{.GoType}}, {{end}}) error {
+{{range .Columns}}{{if .Required}}	if {{.GoName}} == {{.ZeroValue}} {
+		return {{$.EntityName}}DomainError{Field: "{{.Name}}", Message: "is required"}
+	}
+{{end}}{{end}}	return nil
+}
+
+var _ = errors.New
+var _ = time.Now

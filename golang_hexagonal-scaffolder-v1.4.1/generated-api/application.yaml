@@ -1,0 +1,31 @@
+# generated-api/application.yaml
+# Default configuration. Env vars of the same name (upper-cased) OVERRIDE
+# these values at runtime. There is no YAML parser in the process — this
+# file documents the defaults and is read by Settings.ToSettings as a
+# fallback when an env var is unset.
+
+db:
+  host: postgres
+  port: 5432
+  user: hexapi
+  # password: NEVER default. Must come from POSTGRES_PASSWORD env var.
+  name: hexapi_db
+  pool_size: 10
+  max_overflow: 20
+  conn_timeout: 5
+
+http:
+  port: 8080
+  cors_allowed_origins: http://localhost:8080
+  rate_limit_rpm: 100
+  graceful_shutdown_timeout: 5
+
+auth:
+  jwt_secret: ""           # required in any non-dev environment
+  jwt_issuer: hexapi
+  jwt_ttl_minutes: 60
+
+logging:
+  level: INFO
+  hexapi_level: DEBUG
+  format: json

@@ -1,0 +1,25 @@
+# Build artifacts
+/bin/
+/coverage/
+/out/
+/out-integration/
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Secrets — NEVER commit a real .env
+.env
+.env.*
+!.env.example
+
+# Go test/build cache
+*.out
+*.test
+vendor/
+
+# Distribution archives
+*.zip

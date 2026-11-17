@@ -1,0 +1,40 @@
+{{/* template: main.go.tmpl
+   Entry point for the generated API. Calls server.Boot which loads settings,
+   opens the DB, applies migrations, wires deps, and runs the server with
+   graceful shutdown. Since 1.4.0. */}}
+// Package main is the entry point for the generated hexagonal API.
+// Since 1.4.0.
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"{{.ModulePath}}/internal/app/server"
+	"{{.ModulePath}}/internal/shared/applogger"
+)
+
+func main() {
+	log := applogger.New()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		log.Info("main: signal received, shutting down")
+		stop()
+	}()
+
+	if err := server.Boot(log); err != nil {
+		log.Error("main: boot failed", "err", err)
+		fmt.Fprintln(os.Stderr, "api:", err)
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		os.Exit(1)
+	}
+}

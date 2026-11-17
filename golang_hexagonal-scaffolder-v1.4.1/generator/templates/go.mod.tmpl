@@ -1,0 +1,12 @@
+{{/* template: go.mod.tmpl
+   Renders the go.mod for the generated project.
+   Since 1.4.0. */}}
+module {{.ModulePath}}
+
+go 1.22
+
+require (
+	github.com/go-chi/chi/v5 v5.1.0
+	github.com/lib/pq v1.10.9
+	github.com/prometheus/client_golang v1.20.5
+)

@@ -1,0 +1,112 @@
+{{/* template: infra_errors.go.tmpl
+   Infrastructure template derived from the generated-api reference.
+   {{.ModulePath}} is stamped into every import. Since 1.4.0. */}}
+// Package errors defines the typed errors used by the generated API.
+//
+// Every error returned by a public function implements AppError, which
+// carries a stable string Code (prefixed API-*) and an HTTP status. The
+// ErrorMiddleware is the single place that translates AppError → HTTP, so
+// the error surface is stable across releases.
+//
+// Since 1.4.0.
+package errors
+
+// AppError is the typed error contract. Since 1.4.0.
+type AppError interface {
+	error
+	Code() string  // stable string, e.g. "API-002"
+	HTTPStatus() int
+	Category() string
+}
+
+// Code constants. Since 1.4.0.
+const (
+	CodeValidation       = "API-001"
+	CodeNotFound         = "API-002"
+	CodeConflict         = "API-003"
+	CodeAuth             = "API-004"
+	CodeRateLimit        = "API-005"
+	CodeUnavailable      = "API-006"
+	CodeInternal         = "API-007"
+	CodeDomain           = "API-008"
+	CodeMethodNotAllowed = "API-009"
+	CodeUnsupportedMedia = "API-010"
+	CodeTimeout          = "API-011"
+	CodeBadGateway       = "API-012"
+)
+
+// AppErr is the concrete AppError. Since 1.4.0.
+type AppErr struct {
+	C    string
+	Msg  string
+	HTTP int
+	Cat  string
+	Err  error // optional wrapped cause
+}
+
+// Code returns the stable code. Since 1.4.0.
+func (e AppErr) Code() string { return e.C }
+
+// HTTPStatus returns the HTTP status. Since 1.4.0.
+func (e AppErr) HTTPStatus() int { return e.HTTP }
+
+// Category returns the error category. Since 1.4.0.
+func (e AppErr) Category() string { return e.Cat }
+
+// Error formats the message. Since 1.4.0.
+func (e AppErr) Error() string {
+	if e.Err != nil {
+		return e.C + ": " + e.Msg + ": " + e.Err.Error()
+	}
+	return e.C + ": " + e.Msg
+}
+
+// Unwrap exposes the wrapped cause. Since 1.4.0.
+func (e AppErr) Unwrap() error { return e.Err }
+
+// New constructs an AppErr without a wrapped cause. Since 1.4.0.
+func New(code, msg string, http int, cat string) AppErr {
+	return AppErr{C: code, Msg: msg, HTTP: http, Cat: cat}
+}
+
+// Wrap constructs an AppErr wrapping a cause. Since 1.4.0.
+func Wrap(code, msg string, http int, cat string, cause error) AppErr {
+	return AppErr{C: code, Msg: msg, HTTP: http, Cat: cat, Err: cause}
+}
+
+// ---- convenience constructors ---------------------------------------------
+
+// Validation returns API-001. Since 1.4.0.
+func Validation(msg string) AppErr { return New(CodeValidation, msg, 400, "validation") }
+
+// NotFound returns API-002. Since 1.4.0.
+func NotFound(msg string) AppErr { return New(CodeNotFound, msg, 404, "not-found") }
+
+// Conflict returns API-003. Since 1.4.0.
+func Conflict(msg string) AppErr { return New(CodeConflict, msg, 409, "conflict") }
+
+// Auth returns API-004. Since 1.4.0.
+func Auth(msg string) AppErr { return New(CodeAuth, msg, 401, "auth") }
+
+// RateLimit returns API-005. Since 1.4.0.
+func RateLimit(msg string) AppErr { return New(CodeRateLimit, msg, 429, "rate-limit") }
+
+// Unavailable returns API-006. Since 1.4.0.
+func Unavailable(msg string) AppErr { return New(CodeUnavailable, msg, 503, "availability") }
+
+// Internal returns API-007. Since 1.4.0.
+func Internal(msg string) AppErr { return New(CodeInternal, msg, 500, "internal") }
+
+// Domain returns API-008. Since 1.4.0.
+func Domain(msg string) AppErr { return New(CodeDomain, msg, 422, "domain") }
+
+// IsAppError reports whether err implements AppError. Since 1.4.0.
+func IsAppError(err error) (AppError, bool) {
+	if err == nil {
+		return nil, false
+	}
+	if ae, ok := err.(AppError); ok {
+		return ae, true
+	}
+	return nil, false
+}

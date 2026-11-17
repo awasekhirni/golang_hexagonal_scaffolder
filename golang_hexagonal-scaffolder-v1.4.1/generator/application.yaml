@@ -1,0 +1,27 @@
+# generator/application.yaml
+# Default configuration for the generator. Values here are OVERRIDDEN by
+# environment variables of the same name (upper-cased). There is no runtime
+# YAML parser in the generator — this file documents the defaults and is read
+# by `Settings.ToSettings` only as a fallback when an env var is unset.
+#
+# See docs/SETUP.md for the full env-var matrix.
+
+db:
+  host: 127.0.0.1
+  port: 5432
+  user: hexapi
+  # password: NEVER default. Must come from POSTGRES_PASSWORD env var.
+  name: hexapi_db
+  pool_size: 5          # generator introspection uses a small pool
+  max_overflow: 5
+  conn_timeout: 5
+
+generator:
+  output_dir: ./out
+  module_path: github.com/example/generated-api
+  force: false
+
+logging:
+  level: INFO
+  hexapi_level: DEBUG
+  format: text           # "json" for structured output

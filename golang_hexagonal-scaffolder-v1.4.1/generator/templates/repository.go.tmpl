@@ -1,0 +1,192 @@
+{{/* template: repository.go.tmpl
+   Renders the Postgres repository for each introspected table.
+   Per-table: emitted under internal/domain/{Package}/repository/repository.go.
+   Package "repository"; imports the sibling entity package via {{.Package}} alias.
+   P0-3.1: duplicate-key + not-found detection INSIDE the Tx body so typed
+   AppErrors pass through Tx unchanged. Since 1.4.0. */}}
+// Package repository contains the {{.EntityName}} repository adapter.
+// Since 1.4.0.
+package repository
+
+import (
+	"context"
+	"database/sql"
+	"strings"
+
+	{{.Package}} "{{.ModulePath}}/internal/domain/{{.Package}}"
+	"{{.ModulePath}}/internal/infra/database"
+	"{{.ModulePath}}/internal/shared/applogger"
+	hexerr "{{.ModulePath}}/internal/shared/errors"
+)
+
+// {{.EntityName}}Repository is the port-out for persisting {{.EntityName}}.
+// Since 1.4.0.
+type {{.EntityName}}Repository interface {
+	FindByID(ctx context.Context, id string) (*{{.Package}}.{{.EntityName}}, error)
+	List(ctx context.Context) ([]*{{.Package}}.{{.EntityName}}, error)
+	Save(ctx context.Context, e *{{.Package}}.{{.EntityName}}) error
+	Update(ctx context.Context, e *{{.Package}}.{{.EntityName}}) error
+	Delete(ctx context.Context, id string) error
+}
+
+// {{.EntityName}}Postgres is the Postgres adapter. Since 1.4.0.
+type {{.EntityName}}Postgres struct {
+	log *applogger.Logger
+	db  *database.Factory
+}
+
+// New{{.EntityName}}Postgres constructs the adapter. Since 1.4.0.
+func New{{.EntityName}}Postgres(log *applogger.Logger, db *database.Factory) *{{.EntityName}}Postgres {
+	if log == nil {
+		log = applogger.New()
+	}
+	return &{{.EntityName}}Postgres{log: log, db: db}
+}
+
+// FindByID loads a row by id. API-002 on not-found. Since 1.4.0.
+func (r *{{.EntityName}}Postgres) FindByID(ctx context.Context, id string) (*{{.Package}}.{{.EntityName}}, error) {
+	return applogger.Logged1(r.log, "Repository.FindByID", func() (*{{.Package}}.{{.EntityName}}, error) {
+		if id == "" {
+			return nil, hexerr.Validation("id is required")
+		}
+		var e {{.Package}}.{{.EntityName}}
+		err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+			return tx.QueryRowContext(ctx,
+				`SELECT {{.ColumnsList}} FROM "{{.Table}}" WHERE id = $1`, id).
+				Scan({{.ScanArgs}})
+		})
+		if err != nil {
+			if isNotFound(err) {
+				return nil, hexerr.NotFound("{{.EntityName}} not found: id=" + id)
+			}
+			if ae, ok := hexerr.IsAppError(err); ok {
+				return nil, ae
+			}
+			return nil, hexerr.Wrap(hexerr.CodeInternal, "find failed", 500, "internal", err)
+		}
+		return &e, nil
+	})
+}
+
+// List returns all rows. Since 1.4.0.
+func (r *{{.EntityName}}Postgres) List(ctx context.Context) ([]*{{.Package}}.{{.EntityName}}, error) {
+	return applogger.Logged1(r.log, "Repository.List", func() ([]*{{.Package}}.{{.EntityName}}, error) {
+		rows, err := r.db.DB().QueryContext(ctx,
+			`SELECT {{.ColumnsList}} FROM "{{.Table}}" ORDER BY id`)
+		if err != nil {
+			return nil, hexerr.Wrap(hexerr.CodeInternal, "list failed", 500, "internal", err)
+		}
+		defer rows.Close()
+		var out []*{{.Package}}.{{.EntityName}}
+		for rows.Next() {
+			var e {{.Package}}.{{.EntityName}}
+			if err := rows.Scan({{.ScanArgs}}); err != nil {
+				return nil, hexerr.Wrap(hexerr.CodeInternal, "scan failed", 500, "internal", err)
+			}
+			out = append(out, &e)
+		}
+		return out, rows.Err()
+	})
+}
+
+// Save inserts a new row. P0-3.1: duplicate detection inside the Tx body.
+// Since 1.4.0.
+func (r *{{.EntityName}}Postgres) Save(ctx context.Context, e *{{.Package}}.{{.EntityName}}) error {
+	return r.log.Logged("Repository.Save", func() error {
+		if e == nil {
+			return hexerr.Validation("entity is required")
+		}
+		err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx,
+				`INSERT INTO "{{.Table}}" ({{.ColumnsList}}) VALUES ({{.Placeholders}})`,
+				{{.SaveArgs}})
+			if err != nil {
+				if isDuplicateKey(err) {
+					return hexerr.Conflict("a {{.EntityName}} with this key already exists")
+				}
+				return err
+			}
+			return nil
+		})
+		if err != nil {
+			if ae, ok := hexerr.IsAppError(err); ok {
+				return ae
+			}
+			return hexerr.Wrap(hexerr.CodeInternal, "save failed", 500, "internal", err)
+		}
+		return nil
+	})
+}
+
+// Update mutates an existing row. Since 1.4.0.
+func (r *{{.EntityName}}Postgres) Update(ctx context.Context, e *{{.Package}}.{{.EntityName}}) error {
+	return r.log.Logged("Repository.Update", func() error {
+		if e == nil {
+			return hexerr.Validation("entity is required")
+		}
+		err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+			res, err := tx.ExecContext(ctx,
+				`UPDATE "{{.Table}}" SET {{.UpdateSet}} WHERE id = $1`,
+				{{.UpdateArgs}})
+			if err != nil {
+				if isDuplicateKey(err) {
+					return hexerr.Conflict("a {{.EntityName}} with this key already exists")
+				}
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return hexerr.NotFound("{{.EntityName}} not found: id=" + e.ID)
+			}
+			return nil
+		})
+		if err != nil {
+			if ae, ok := hexerr.IsAppError(err); ok {
+				return ae
+			}
+			return hexerr.Wrap(hexerr.CodeInternal, "update failed", 500, "internal", err)
+		}
+		return nil
+	})
+}
+
+// Delete removes a row by id. Since 1.4.0.
+func (r *{{.EntityName}}Postgres) Delete(ctx context.Context, id string) error {
+	return r.log.Logged("Repository.Delete", func() error {
+		if id == "" {
+			return hexerr.Validation("id is required")
+		}
+		err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+			res, err := tx.ExecContext(ctx, `DELETE FROM "{{.Table}}" WHERE id = $1`, id)
+			if err != nil {
+				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				return hexerr.NotFound("{{.EntityName}} not found: id=" + id)
+			}
+			return nil
+		})
+		if err != nil {
+			if ae, ok := hexerr.IsAppError(err); ok {
+				return ae
+			}
+			return hexerr.Wrap(hexerr.CodeInternal, "delete failed", 500, "internal", err)
+		}
+		return nil
+	})
+}
+
+// isNotFound reports whether err is sql.ErrNoRows. Since 1.4.0.
+func isNotFound(err error) bool {
+	return err == sql.ErrNoRows || strings.Contains(err.Error(), "no rows")
+}
+
+// isDuplicateKey detects a Postgres unique-violation. Since 1.4.0.
+func isDuplicateKey(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "unique constraint") ||
+		strings.Contains(msg, "duplicate key") ||
+		strings.Contains(msg, "23505")
+}

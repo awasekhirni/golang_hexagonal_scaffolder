@@ -1,0 +1,103 @@
+{{/* template: service.go.tmpl
+   Renders the application service for each introspected table.
+   Per-table: emitted once per table under internal/application/{Package}/service.go.
+   Uses dom alias for the domain import to avoid a same-name package clash.
+   Since 1.4.0. */}}
+// Package {{.Package}} contains the {{.EntityName}} application service.
+// Since 1.4.0.
+package {{.Package}}
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+
+	dom "{{.ModulePath}}/internal/domain/{{.Package}}"
+	"{{.ModulePath}}/internal/domain/{{.Package}}/repository"
+	"{{.ModulePath}}/internal/shared/applogger"
+	hexerr "{{.ModulePath}}/internal/shared/errors"
+)
+
+// Service is the application service for {{.EntityName}}. Since 1.4.0.
+type Service struct {
+	log  *applogger.Logger
+	repo repository.{{.EntityName}}Repository
+}
+
+// NewService constructs a Service. Since 1.4.0.
+func NewService(log *applogger.Logger, repo repository.{{.EntityName}}Repository) *Service {
+	if log == nil {
+		log = applogger.New()
+	}
+	return &Service{log: log, repo: repo}
+}
+
+// Create persists a new {{.EntityName}}. Since 1.4.0.
+func (s *Service) Create(ctx context.Context, e *dom.{{.EntityName}}) (*dom.{{.EntityName}}, error) {
+	return applogger.Logged1(s.log, "Service.Create", func() (*dom.{{.EntityName}}, error) {
+		if e == nil {
+			s.log.Error("Service.Create: nil entity")
+			return nil, hexerr.Validation("entity is required")
+		}
+		if e.ID == "" {
+			e.ID = newID()
+		}
+		if err := s.repo.Save(ctx, e); err != nil {
+			return nil, err
+		}
+		return e, nil
+	})
+}
+
+// Get loads a {{.EntityName}} by id. Since 1.4.0.
+func (s *Service) Get(ctx context.Context, id string) (*dom.{{.EntityName}}, error) {
+	return applogger.Logged1(s.log, "Service.Get", func() (*dom.{{.EntityName}}, error) {
+		return s.repo.FindByID(ctx, id)
+	})
+}
+
+// List returns all {{.EntityName}} records. Since 1.4.0.
+func (s *Service) List(ctx context.Context) ([]*dom.{{.EntityName}}, error) {
+	return applogger.Logged1(s.log, "Service.List", func() ([]*dom.{{.EntityName}}, error) {
+		items, err := s.repo.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if items == nil {
+			items = []*dom.{{.EntityName}}{}
+		}
+		return items, nil
+	})
+}
+
+// Update mutates a {{.EntityName}}. Since 1.4.0.
+func (s *Service) Update(ctx context.Context, e *dom.{{.EntityName}}) (*dom.{{.EntityName}}, error) {
+	return applogger.Logged1(s.log, "Service.Update", func() (*dom.{{.EntityName}}, error) {
+		if e == nil || e.ID == "" {
+			s.log.Error("Service.Update: bad input")
+			return nil, hexerr.Validation("id is required")
+		}
+		if err := s.repo.Update(ctx, e); err != nil {
+			return nil, err
+		}
+		return e, nil
+	})
+}
+
+// Delete removes a {{.EntityName}} by id. Since 1.4.0.
+func (s *Service) Delete(ctx context.Context, id string) error {
+	return s.log.Logged("Service.Delete", func() error {
+		if id == "" {
+			s.log.Error("Service.Delete: empty id")
+			return hexerr.Validation("id is required")
+		}
+		return s.repo.Delete(ctx, id)
+	})
+}
+
+// newID generates a random hex id. Since 1.4.0.
+func newID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}

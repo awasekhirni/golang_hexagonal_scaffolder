@@ -1,0 +1,156 @@
+{{/* template: server.go.tmpl
+   Schema-aware: imports each entity's repository/service/controller and mounts
+   CRUD routes for every introspected table. {{range .Tables}} expands the
+   per-entity wiring. Since 1.4.0. */}}
+// Package server wires the chi router, middleware stack, and routes, and
+// runs the HTTP server with graceful shutdown. Since 1.4.0.
+package server
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"time"
+
+	"{{.ModulePath}}/internal/app/middleware"
+	"{{.ModulePath}}/internal/app/routes"
+	"{{.ModulePath}}/internal/config/settings"
+	"{{.ModulePath}}/internal/infra/bus"
+	"{{.ModulePath}}/internal/infra/database"
+	"{{.ModulePath}}/internal/shared/applogger"
+	hexerr "{{.ModulePath}}/internal/shared/errors"
+	"github.com/go-chi/chi/v5"
+{{range .Tables}}	{{.Package}}repo "{{$.ModulePath}}/internal/domain/{{.Package}}/repository"
+	{{.Package}}ctrl "{{$.ModulePath}}/internal/application/{{.Package}}/controller"
+	"{{$.ModulePath}}/internal/application/{{.Package}}"
+{{end}})
+
+// Deps bundles the wired dependencies. Since 1.4.0.
+type Deps struct {
+	Log      *applogger.Logger
+	Settings settings.Settings
+	DB       *database.Factory
+	EventBus *bus.DomainEventBus
+	CmdBus   *bus.EnterpriseBus
+	Services *bus.ServiceRegistration
+}
+
+// Build constructs the chi router with the full middleware stack and per-entity
+// routes. Since 1.4.0.
+func Build(d Deps) *chi.Mux {
+	r := chi.NewRouter()
+	r.Use(middleware.RequestID(d.Log))
+	r.Use(middleware.Recover(d.Log))
+	r.Use(middleware.Logging(d.Log))
+	r.Use(middleware.SecurityHeaders)
+	r.Use(middleware.CORS(d.Settings.CORSOrigins))
+	rl := middleware.NewRateLimiter(d.Settings.RateLimitRPM)
+	r.Use(rl.RateLimit)
+
+	health := routes.NewHealthRoute(d.Log, d.DB)
+	r.Get("/health", health.Combined)
+	r.Get("/health/live", health.Live)
+	r.Get("/health/ready", health.Ready)
+	r.Get("/metrics", routes.Metrics)
+
+	auth := routes.NewAuthRoute(d.Log, d.Settings.JWTSecret, d.Settings.JWTIssuer, d.Settings.JWTTTLMin)
+	r.Post("/auth/token", auth.Issue)
+
+{{range .Tables}}	// {{.EntityName}} routes.
+	repo{{.EntityName}} := {{.Package}}repo.New{{.EntityName}}Postgres(d.Log, d.DB)
+	svc{{.EntityName}} := {{.Package}}.NewService(d.Log, repo{{.EntityName}})
+	ctrl{{.EntityName}} := {{.Package}}ctrl.NewController(d.Log, svc{{.EntityName}})
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.Auth(d.Settings.JWTSecret))
+		r.Get("/{{.RouteName}}", ctrl{{.EntityName}}.List)
+		r.Post("/{{.RouteName}}", ctrl{{.EntityName}}.Create)
+		r.Get("/{{.RouteName}}/{id}", ctrl{{.EntityName}}.Get)
+		r.Put("/{{.RouteName}}/{id}", ctrl{{.EntityName}}.Update)
+		r.Delete("/{{.RouteName}}/{id}", ctrl{{.EntityName}}.Delete)
+	})
+{{end}}	return r
+}
+
+// Run starts the HTTP server with graceful shutdown. Since 1.4.0.
+func Run(d Deps) error {
+	return d.Log.Logged("server.Run", func() error {
+		srv := &http.Server{
+			Addr:              ":" + itoa(d.Settings.HTTPPort),
+			Handler:           Build(d),
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+		errCh := make(chan error, 1)
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- err
+			}
+		}()
+		select {
+		case err := <-errCh:
+			d.Log.Error("server.Run: listen failed", "err", err)
+			return hexerr.Wrap(hexerr.CodeInternal, "listen failed", 500, "internal", err)
+		case <-context.Background().Done():
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(d.Settings.GracefulSec)*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			d.Log.Error("server.Run: graceful shutdown failed", "err", err)
+			return hexerr.Wrap(hexerr.CodeInternal, "shutdown failed", 500, "internal", err)
+		}
+		return nil
+	})
+}
+
+// Boot loads settings, opens the DB, applies migrations, wires deps, runs.
+// Since 1.4.0.
+func Boot(log *applogger.Logger) error {
+	return log.Logged("server.Boot", func() error {
+		s, err := settings.ToSettings(log, envGet)
+		if err != nil {
+			return err
+		}
+		db := database.New(log)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := db.Init(ctx, database.DriverName, s.DSN(), s.PoolSize, s.MaxOverflow, s.ConnTimeout); err != nil {
+			return err
+		}
+		if err := db.Migrate(ctx, migrations()); err != nil {
+			return err
+		}
+		deps := Deps{
+			Log:      log,
+			Settings: s,
+			DB:       db,
+			EventBus: bus.NewDomainEventBus(log),
+			CmdBus:   bus.NewEnterpriseBus(log),
+			Services: bus.NewServiceRegistration(log),
+		}
+		defer db.Close()
+		return Run(deps)
+	})
+}
+
+// itoa is a dependency-free int → string. Since 1.4.0.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := false
+	if n < 0 {
+		neg = true
+		n = -n
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	if neg {
+		return "-" + string(b)
+	}
+	return string(b)
+}

@@ -1,0 +1,228 @@
+// Package database provides the connection pool, migration runner, and
+// transaction wrapper for the generated API.
+//
+// v1.4.0 / P0-3.1: Tx has an AppError pass-through — if the body returns an
+// AppError, Tx returns it unchanged so the caller's typed-error mapping
+// (e.g. UserRepository.Save mapping a duplicate-key to API-003) is not
+// swallowed. Init/Migrate/Tx each log the cause at ERROR before re-throwing.
+//
+// Since 1.4.0.
+package database
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+
+	"github.com/example/generated-api/internal/shared/applogger"
+	hexerr "github.com/example/generated-api/internal/shared/errors"
+
+	_ "github.com/lib/pq"
+)
+
+// DriverName is the registered SQL driver name. Since 1.4.0.
+const DriverName = "postgres"
+
+// Factory owns the *sql.DB. Since 1.4.0.
+type Factory struct {
+	log *applogger.Logger
+	db  *sql.DB
+}
+
+// New constructs a Factory. Since 1.4.0.
+func New(log *applogger.Logger) *Factory {
+	if log == nil {
+		log = applogger.New()
+	}
+	return &Factory{log: log}
+}
+
+// Init opens the pool, configures it, and pings. Since 1.4.0.
+func (f *Factory) Init(ctx context.Context, driverName, dsn string, poolSize, maxOverflow, connTimeout int) error {
+	return f.log.Logged("DatabaseFactory.Init", func() error {
+		if driverName == "" {
+			driverName = DriverName
+		}
+		db, err := sql.Open(driverName, dsn)
+		if err != nil {
+			f.log.Error("DatabaseFactory.Init: sql.Open failed", "driver", driverName, "err", err)
+			return hexerr.Wrap(hexerr.CodeInternal, "sql.Open failed", 500, "internal", err)
+		}
+		if poolSize > 0 {
+			db.SetMaxOpenConns(poolSize + maxOverflow)
+			db.SetMaxIdleConns(poolSize)
+		}
+		if connTimeout > 0 {
+			db.SetConnMaxLifetime(0)
+		}
+		if err := db.PingContext(ctx); err != nil {
+			f.log.Error("DatabaseFactory.Init: ping failed", "err", err)
+			_ = db.Close()
+			return hexerr.Wrap(hexerr.CodeUnavailable, "DB ping failed", 503, "availability", err)
+		}
+		f.db = db
+		return nil
+	})
+}
+
+// DB returns the underlying *sql.DB. Panics if Init was not called. Since 1.4.0.
+func (f *Factory) DB() *sql.DB {
+	if f.db == nil {
+		panic("DatabaseFactory: Init not called")
+	}
+	return f.db
+}
+
+// Close closes the pool. Since 1.4.0.
+func (f *Factory) Close() error {
+	return f.log.Logged("DatabaseFactory.Close", func() error {
+		if f.db == nil {
+			return nil
+		}
+		err := f.db.Close()
+		f.db = nil
+		if err != nil {
+			f.log.Error("DatabaseFactory.Close: failed", "err", err)
+			return hexerr.Wrap(hexerr.CodeInternal, "close failed", 500, "internal", err)
+		}
+		return nil
+	})
+}
+
+// Migrate applies migrations in order, tracking versions in schema_migrations.
+// Since 1.4.0.
+func (f *Factory) Migrate(ctx context.Context, migrations []Migration) error {
+	return f.log.Logged("DatabaseFactory.Migrate", func() error {
+		if f.db == nil {
+			f.log.Error("DatabaseFactory.Migrate: Init not called")
+			return hexerr.Internal("DB Init not called")
+		}
+		if err := f.ensureMigrationsTable(ctx); err != nil {
+			return err
+		}
+		applied, err := f.appliedVersions(ctx)
+		if err != nil {
+			return err
+		}
+		for _, m := range migrations {
+			if _, ok := applied[m.Version]; ok {
+				continue
+			}
+			if err := f.applyOne(ctx, m); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// Migration is a numbered SQL script. Since 1.4.0.
+type Migration struct {
+	Version string
+	SQL     string
+}
+
+// Tx runs fn inside a transaction. P0-3.1: AppError pass-through. Since 1.4.0.
+func (f *Factory) Tx(ctx context.Context, fn func(*sql.Tx) error) error {
+	return f.log.Logged("DatabaseFactory.Tx", func() error {
+		if f.db == nil {
+			f.log.Error("DatabaseFactory.Tx: Init not called")
+			return hexerr.Internal("DB Init not called")
+		}
+		tx, err := f.db.BeginTx(ctx, nil)
+		if err != nil {
+			f.log.Error("DatabaseFactory.Tx: begin failed", "err", err)
+			return hexerr.Wrap(hexerr.CodeUnavailable, "begin tx failed", 503, "availability", err)
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				if rbErr := tx.Rollback(); rbErr != nil && rbErr != sql.ErrTxDone {
+					f.log.Error("DatabaseFactory.Tx: rollback failed", "err", rbErr)
+				}
+			}
+		}()
+		if err := fn(tx); err != nil {
+			// P0-3.1: AppError pass-through.
+			if ae, ok := hexerr.IsAppError(err); ok {
+				f.log.Error("DatabaseFactory.Tx: body returned AppError (pass-through)", "code", ae.Code(), "err", err)
+				return err
+			}
+			f.log.Error("DatabaseFactory.Tx: body failed", "err", err)
+			return hexerr.Wrap(hexerr.CodeInternal, "tx body failed", 500, "internal", err)
+		}
+		if err := tx.Commit(); err != nil {
+			f.log.Error("DatabaseFactory.Tx: commit failed", "err", err)
+			return hexerr.Wrap(hexerr.CodeInternal, "commit failed", 500, "internal", err)
+		}
+		committed = true
+		return nil
+	})
+}
+
+// Ping returns nil if the DB responds to SELECT 1. Since 1.4.0.
+func (f *Factory) Ping(ctx context.Context) error {
+	return f.log.Logged("DatabaseFactory.Ping", func() error {
+		if f.db == nil {
+			return hexerr.Unavailable("DB not initialised")
+		}
+		var one int
+		err := f.db.QueryRowContext(ctx, "SELECT 1").Scan(&one)
+		if err != nil {
+			f.log.Error("DatabaseFactory.Ping: SELECT 1 failed", "err", err)
+			return hexerr.Wrap(hexerr.CodeUnavailable, "SELECT 1 failed", 503, "availability", err)
+		}
+		return nil
+	})
+}
+
+// ---- helpers ---------------------------------------------------------------
+
+func (f *Factory) ensureMigrationsTable(ctx context.Context) error {
+	_, err := f.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`)
+	if err != nil {
+		f.log.Error("ensureMigrationsTable: failed", "err", err)
+		return hexerr.Wrap(hexerr.CodeInternal, "create schema_migrations failed", 500, "internal", err)
+	}
+	return nil
+}
+
+func (f *Factory) appliedVersions(ctx context.Context) (map[string]struct{}, error) {
+	rows, err := f.db.QueryContext(ctx, `SELECT version FROM schema_migrations`)
+	if err != nil {
+		f.log.Error("appliedVersions: query failed", "err", err)
+		return nil, hexerr.Wrap(hexerr.CodeInternal, "select migrations failed", 500, "internal", err)
+	}
+	defer rows.Close()
+	out := map[string]struct{}{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			f.log.Error("appliedVersions: scan failed", "err", err)
+			return nil, hexerr.Wrap(hexerr.CodeInternal, "scan version failed", 500, "internal", err)
+		}
+		out[v] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
+func (f *Factory) applyOne(ctx context.Context, m Migration) error {
+	return f.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT DO NOTHING`, m.Version); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// String formats a Factory for debug. Since 1.4.0.
+func (f *Factory) String() string {
+	if f.db == nil {
+		return "DatabaseFactory(uninitialised)"
+	}
+	s := f.db.Stats()
+	return fmt.Sprintf("DatabaseFactory(open=%d in-use=%d)", s.OpenConnections, s.InUse)
+}

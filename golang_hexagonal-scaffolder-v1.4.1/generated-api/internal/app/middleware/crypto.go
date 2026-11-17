@@ -1,0 +1,27 @@
+// crypto helpers for the middleware package: random bytes, HMAC-SHA256,
+// base64url encoding. Since 1.4.0.
+
+package middleware
+
+import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+)
+
+// cryptoRandReader is the process random reader. Since 1.4.0.
+var cryptoRandReader = rand.Reader
+
+// hmacSHA256 returns the HMAC-SHA256 of data keyed by key. Since 1.4.0.
+func hmacSHA256(key, data string) []byte {
+	mac := hmac.New(sha256.New, []byte(key))
+	mac.Write([]byte(data))
+	return mac.Sum(nil)
+}
+
+// base64URLEncode returns the base64url (no padding) encoding of b.
+// Since 1.4.0.
+func base64URLEncode(b []byte) string {
+	return base64.RawURLEncoding.EncodeToString(b)
+}
